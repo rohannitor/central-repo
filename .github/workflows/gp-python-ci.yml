@@ -56,7 +56,7 @@ jobs:
           if [ ! -d "src" ] && [ -d "apps" ]; then
             COV_TARGET="apps"
           fi
-          pytest --cov="$COV_TARGET" --cov-report=xml:coverage.xml --cov-report=term-missing
+          PYTHONPATH=".:${PYTHONPATH:-}" pytest --cov="$COV_TARGET" --cov-report=xml:coverage.xml --cov-report=term-missing
 
       - name: Verify Minimum 80% Coverage on New Code
         run: |
