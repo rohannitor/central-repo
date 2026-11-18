@@ -1,0 +1,62 @@
+name: Golden Pipeline PR Checks
+
+on:
+  workflow_call:
+    inputs:
+      target-branch:
+        description: 'Target branch being validated'
+        required: false
+        type: string
+        default: 'develop'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-pr:
+    name: PR Governance & Convention Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR Title Format
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "Validating PR title: $PR_TITLE"
+          # Conventional Commits Regex
+          CC_REGEX="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?: .{1,100}$"
+          if [[ ! "$PR_TITLE" =~ $CC_REGEX ]]; then
+            echo "ERROR: PR title does not follow Conventional Commits standard (e.g., 'feat(auth): add OIDC support')."
+            exit 1
+          fi
+          echo "PR title is valid."
+
+      - name: Validate Branch Targeting Rules
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          echo "Target branch: $BASE_REF, Source branch: $HEAD_REF"
+          # Direct feature branches targeting main are strictly prohibited
+          if [[ "$BASE_REF" == "main" && "$HEAD_REF" =~ ^(feature/|feat/) ]]; then
+            echo "ERROR: Feature branches cannot target 'main' directly. Merge into 'develop' first."
+            exit 1
+          fi
+          echo "Branch targeting rules satisfied."
+
+      - name: Validate Commit Messages
+        run: |
+          echo "Scanning commit messages in PR range..."
+          COMMITS=$(git log --no-merges origin/${{ github.base_ref }}..HEAD --pretty=format:"%s")
+          CC_REGEX="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?: .{1,100}$"
+          while IFS= read -r line; do
+            if [[ -n "$line" && ! "$line" =~ $CC_REGEX ]]; then
+              echo "WARNING: Commit message '$line' does not follow Conventional Commits format."
+            fi
+          done <<< "$COMMITS"
+          echo "Commit inspection completed."

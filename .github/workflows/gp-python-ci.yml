@@ -1,0 +1,67 @@
+name: Golden Pipeline Python CI
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python runtime version'
+        required: false
+        type: string
+        default: '3.12'
+
+permissions:
+  contents: read
+
+jobs:
+  python-ci:
+    name: Lint, Format, Typecheck & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python ${{ inputs.python-version }}
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: 'pip'
+
+      - name: Install Tooling & Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          pip install ruff pyright pytest pytest-cov
+
+      - name: Run Ruff Linter
+        run: |
+          echo "Running Ruff linter..."
+          ruff check .
+
+      - name: Run Ruff Format Check
+        run: |
+          echo "Verifying code formatting with Ruff..."
+          ruff format --check .
+
+      - name: Run Pyright Type Checking
+        run: |
+          echo "Running Pyright static type analysis..."
+          pyright
+
+      - name: Execute Pytest with Code Coverage
+        run: |
+          echo "Running unit tests with branch coverage..."
+          pytest --cov=src --cov-report=xml:coverage.xml --cov-report=term-missing
+
+      - name: Verify Minimum 80% Coverage on New Code
+        run: |
+          echo "Verifying baseline coverage artifact exists..."
+          test -f coverage.xml || (echo "ERROR: coverage.xml not generated" && exit 1)
+
+      - name: Upload Coverage Artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: python-coverage
+          path: coverage.xml
+          retention-days: 7

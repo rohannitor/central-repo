@@ -1,0 +1,61 @@
+name: Golden Pipeline Repository Governance
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  repo-governance:
+    name: SHA Pinning & Governance Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify CODEOWNERS File Exists
+        run: |
+          echo "Checking for CODEOWNERS file..."
+          if [ ! -f "CODEOWNERS" ] && [ ! -f ".github/CODEOWNERS" ] && [ ! -f "docs/CODEOWNERS" ]; then
+            echo "ERROR: CODEOWNERS file is missing from repository."
+            exit 1
+          fi
+          echo "CODEOWNERS found."
+
+      - name: Enforce 40-Character SHA Pinning in Workflows
+        run: |
+          echo "Validating that all workflow actions and reusable workflows are pinned to full 40-character commit SHAs..."
+          FAILED=0
+          WORKFLOW_FILES=$(find .github/workflows -type f \( -name "*.yml" -o -name "*.yaml" \))
+          for file in $WORKFLOW_FILES; do
+            echo "Scanning $file..."
+            # Check for unpinned 'uses:' references (e.g., @v1, @main, @v1.2.3 instead of 40-hex SHA)
+            UNPINNED=$(grep -E "uses:\s+[^@]+@[^#\n\r]+" "$file" | grep -vE "@[a-f0-9]{40}" || true)
+            if [ -n "$UNPINNED" ]; then
+              echo "ERROR: Found unpinned actions in $file:"
+              echo "$UNPINNED"
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            echo "Action pinning check failed. Pin all actions to full 40-character commit SHAs."
+            exit 1
+          fi
+          echo "All actions and reusable workflows are pinned to 40-character SHAs."
+
+      - name: Check for Unintended Confidential Files
+        run: |
+          echo "Scanning for sensitive file patterns..."
+          SENSITIVE_FILES=$(find . -type f \( \
+            -name "*.pem" -o -name "*.key" -o -name "*.pfx" -o -name "*.p12" -o \
+            -name "id_rsa*" -o -name ".env*" -o -name "*_rsa" \
+          \) -not -path "*/.git/*" || true)
+
+          if [ -n "$SENSITIVE_FILES" ]; then
+            echo "ERROR: Sensitive/confidential files detected in repository tree:"
+            echo "$SENSITIVE_FILES"
+            exit 1
+          fi
+          echo "No sensitive files detected."

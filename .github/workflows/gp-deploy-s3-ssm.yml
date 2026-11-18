@@ -1,0 +1,151 @@
+name: Golden Pipeline Build Once & Deploy via S3 SSM
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target deployment environment'
+        required: true
+        type: string
+        default: 'sandbox'
+      aws-region:
+        description: 'Target AWS region'
+        required: false
+        type: string
+        default: 'ap-south-1'
+      artifact-bucket:
+        description: 'S3 bucket for immutable release archives'
+        required: true
+        type: string
+      ec2-instance-id:
+        description: 'Target EC2 instance ID for SSM deployment'
+        required: true
+        type: string
+      role-to-assume:
+        description: 'AWS IAM Role ARN assumed via OIDC'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build ARM64, Scan, Export to S3 & Trigger SSM
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Calculate Immutable Image Key
+        id: image-meta
+        run: |
+          IMAGE_KEY=$(git rev-parse HEAD)
+          echo "image_key=${IMAGE_KEY}" >> "$GITHUB_OUTPUT"
+          echo "Computed immutable image key: ${IMAGE_KEY}"
+
+      - name: Set up QEMU for ARM64 Emulation
+        uses: docker/setup-qemu-action@49b3bc8e6bdd4480e8226f5bf2103d14c305feb4 # v3.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Build ARM64 Docker Image
+        run: |
+          IMAGE_TAG="golden-release:${{ steps.image-meta.outputs.image_key }}"
+          echo "Building linux/arm64 Docker image: ${IMAGE_TAG}"
+          docker buildx build \
+            --platform linux/arm64 \
+            --tag "${IMAGE_TAG}" \
+            --load \
+            .
+
+      - name: Scan Image with Trivy (Fail Closed)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        with:
+          image-ref: "golden-release:${{ steps.image-meta.outputs.image_key }}"
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de0 # v0.18.0
+        with:
+          image: "golden-release:${{ steps.image-meta.outputs.image_key }}"
+          format: 'spdx-json'
+          output-file: 'sbom.spdx.json'
+
+      - name: Export Image Archive and Checksum
+        run: |
+          mkdir -p release
+          IMAGE_TAG="golden-release:${{ steps.image-meta.outputs.image_key }}"
+          docker save "${IMAGE_TAG}" -o release/image.tar
+          gzip release/image.tar
+          cd release
+          sha256sum image.tar.gz > image.sha256
+          cd ..
+          cp sbom.spdx.json release/sbom.spdx.json
+
+          # Generate release metadata
+          cat <<EOF > release/metadata.json
+          {
+            "repository": "${{ github.repository }}",
+            "commit_sha": "${{ github.sha }}",
+            "image_key": "${{ steps.image-meta.outputs.image_key }}",
+            "platform": "linux/arm64",
+            "build_timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "artifact": "image.tar.gz",
+            "sbom": "sbom.spdx.json"
+          }
+          EOF
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@e3ddf1e3cb00b14bae8c08170c0612140b904de9 # v4.0.2
+        with:
+          role-to-assume: ${{ inputs.role-to-assume }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Upload Release Artifacts to Amazon S3
+        run: |
+          S3_PREFIX="releases/${{ github.event.repository.name }}/${{ steps.image-meta.outputs.image_key }}"
+          echo "Publishing release artifacts to s3://${{ inputs.artifact-bucket }}/${S3_PREFIX}/"
+          aws s3 cp release/image.tar.gz "s3://${{ inputs.artifact-bucket }}/${S3_PREFIX}/image.tar.gz"
+          aws s3 cp release/image.sha256 "s3://${{ inputs.artifact-bucket }}/${S3_PREFIX}/image.sha256"
+          aws s3 cp release/metadata.json "s3://${{ inputs.artifact-bucket }}/${S3_PREFIX}/metadata.json"
+          aws s3 cp release/sbom.spdx.json "s3://${{ inputs.artifact-bucket }}/${S3_PREFIX}/sbom.spdx.json"
+
+      - name: Trigger EC2 Deployment via SSM Run Command
+        run: |
+          echo "Dispatching SSM Run Command to instance: ${{ inputs.ec2-instance-id }}"
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ inputs.ec2-instance-id }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"sudo /opt/deployment/fetch-release.sh ${{ inputs.artifact-bucket }} ${{ github.event.repository.name }} ${{ steps.image-meta.outputs.image_key }}\"]" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command dispatched: $COMMAND_ID. Awaiting invocation status..."
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ inputs.ec2-instance-id }}"
+
+          INVOCATION_STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ inputs.ec2-instance-id }}" \
+            --query "Status" \
+            --output text)
+
+          echo "SSM Invocation completed with status: $INVOCATION_STATUS"
+          if [[ "$INVOCATION_STATUS" != "Success" ]]; then
+            echo "ERROR: SSM Deployment failed on host."
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "${{ inputs.ec2-instance-id }}" \
+              --query "StandardErrorContent" \
+              --output text
+            exit 1
+          fi
