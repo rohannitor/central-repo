@@ -1,0 +1,52 @@
+name: Golden Pipeline Java CI
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: 'Java JDK version'
+        required: false
+        type: string
+        default: '21'
+      app-dir:
+        description: 'Directory path containing the Java project'
+        required: false
+        type: string
+        default: 'apps/java-app'
+
+permissions:
+  contents: read
+
+jobs:
+  java-ci:
+    name: Java Build, Checkstyle & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK ${{ inputs.java-version }}
+        uses: actions/setup-java@8df1039563d151c9d00341147b7b01d4b8666982 # v4.5.0
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build and Test with Maven
+        working-directory: ${{ inputs.app-dir }}
+        run: |
+          echo "Building Java application and executing unit tests..."
+          mvn clean test jacoco:report
+
+      - name: Verify JaCoCo Coverage Report Exists
+        working-directory: ${{ inputs.app-dir }}
+        run: |
+          echo "Verifying code coverage report..."
+          test -f target/site/jacoco/jacoco.xml || (echo "ERROR: jacoco.xml not found" && exit 1)
+
+      - name: Upload JaCoCo Coverage Artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: java-coverage
+          path: ${{ inputs.app-dir }}/target/site/jacoco/jacoco.xml
+          retention-days: 7

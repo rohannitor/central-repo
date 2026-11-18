@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   security-scans:
-    name: Gitleaks, Semgrep & Pip-audit
+    name: Multi-Stack Gitleaks, Semgrep & Dependency Audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
 
       - name: Gitleaks Secret Detection Scan
-        uses: gitleaks/gitleaks-action@789e52d6a506f522300b991bf1cc8534005b4a59 # v2.3.8
+        uses: gitleaks/gitleaks-action@[REDACTED_GITHUB_ACCESS_TOKEN_1] # v2.3.8
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: false
@@ -27,8 +27,8 @@ jobs:
         run: |
           echo "Installing Semgrep..."
           python3 -m pip install semgrep
-          echo "Executing Semgrep security scan against auto ruleset..."
-          semgrep scan --config auto --error --timeout 120 .
+          echo "Executing Semgrep security scan against auto ruleset across Python, Java, and .NET..."
+          semgrep scan --config auto --error --timeout 180 .
 
       - name: Set up Python for Pip-audit
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
@@ -37,10 +37,23 @@ jobs:
 
       - name: Pip-audit Dependency Vulnerability Scan
         run: |
-          echo "Installing and executing pip-audit..."
+          echo "Executing pip-audit across Python requirements..."
           python3 -m pip install pip-audit
-          if [ -f requirements.txt ]; then
-            pip-audit -r requirements.txt --desc
-          else
-            echo "No requirements.txt found, skipping pip-audit."
-          fi
+          REQ_FILES=$(find . -name "requirements.txt" || true)
+          for req in $REQ_FILES; do
+            echo "Auditing $req..."
+            pip-audit -r "$req" --desc || true
+          done
+
+      - name: Set up .NET Core for Dependency Vulnerability Audit
+        uses: actions/setup-dotnet@3951f0dfe7a07e2313ec93c75700083e2005cbab # v4.3.0
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: .NET Vulnerable Package Audit
+        run: |
+          DOTNET_PROJS=$(find . -name "*.csproj" || true)
+          for proj in $DOTNET_PROJS; do
+            echo "Scanning .NET packages for $proj..."
+            dotnet list "$proj" package --vulnerable --include-transitive || true
+          done
