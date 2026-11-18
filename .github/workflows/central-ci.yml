@@ -1,0 +1,128 @@
+name: Central Repo Pipeline CI
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: central-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-workflows:
+    name: Validate Workflow Syntaxes & SHA Pinning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Central Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python for Workflow Linting
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: python3 -m pip install pyyaml
+
+      - name: Validate YAML Syntax & Structure Across All Workflows
+        run: |
+          python3 -c "
+          import glob, os, sys, yaml
+
+          workflow_dir = os.path.join('.github', 'workflows')
+          files = glob.glob(os.path.join(workflow_dir, '*.yml')) + glob.glob(os.path.join(workflow_dir, '*.yaml'))
+          
+          if not files:
+              print('ERROR: No workflow files found.')
+              sys.exit(1)
+
+          failed = False
+          for fpath in sorted(files):
+              try:
+                  with open(fpath, 'r', encoding='utf-8') as f:
+                      data = yaml.safe_load(f)
+                  if not isinstance(data, dict):
+                      print(f'ERROR: {fpath} root is not a dictionary')
+                      failed = True
+                  else:
+                      print(f'PASS: {fpath} is valid YAML (name: {data.get(\"name\", \"unnamed\")})')
+              except Exception as e:
+                  print(f'ERROR parsing {fpath}: {e}')
+                  failed = True
+
+          if failed:
+              sys.exit(1)
+          print('All workflow YAML syntaxes verified successfully.')
+          "
+
+      - name: Enforce Strict 40-Character SHA Pinning Across All Workflows
+        run: |
+          python3 -c "
+          import glob, os, re, sys
+
+          workflow_dir = os.path.join('.github', 'workflows')
+          files = glob.glob(os.path.join(workflow_dir, '*.yml')) + glob.glob(os.path.join(workflow_dir, '*.yaml'))
+
+          pattern = re.compile(r'^\s+uses:\s+([^@\s]+)@([^\s#]+)')
+          sha_pattern = re.compile(r'^[a-f0-9]{40}$')
+
+          violations = []
+          for fpath in files:
+              with open(fpath, 'r', encoding='utf-8') as f:
+                  for line_no, line in enumerate(f, start=1):
+                      match = pattern.search(line)
+                      if match:
+                          action = match.group(1)
+                          ref = match.group(2)
+                          # Ignore local action references (e.g., ./.github/actions/...)
+                          if action.startswith('.'):
+                              continue
+                          if not sha_pattern.match(ref):
+                              violations.append(f'{fpath}:{line_no} -> {action}@{ref}')
+
+          if violations:
+              print('ERROR: The following actions are not pinned to a 40-character commit SHA:')
+              for v in violations:
+                  print(f'  - {v}')
+              sys.exit(1)
+
+          print('All external action uses are strictly pinned to 40-character SHAs.')
+          "
+
+      - name: Verify Reusable Workflow Definitions
+        run: |
+          python3 -c "
+          import glob, os, sys, yaml
+
+          workflow_dir = os.path.join('.github', 'workflows')
+          reusable_files = glob.glob(os.path.join(workflow_dir, 'gp-*.yml'))
+
+          missing_call = []
+          for fpath in reusable_files:
+              with open(fpath, 'r', encoding='utf-8') as f:
+                  doc = yaml.safe_load(f)
+              on_triggers = doc.get('on') or doc.get(True) # YAML 'on' can parse as boolean True
+              if isinstance(on_triggers, dict):
+                  if 'workflow_call' not in on_triggers:
+                      missing_call.append(fpath)
+              else:
+                  missing_call.append(fpath)
+
+          if missing_call:
+              print('ERROR: The following Golden Pipeline workflows lack workflow_call:')
+              for m in missing_call:
+                  print(f'  - {m}')
+              sys.exit(1)
+
+          print(f'Verified {len(reusable_files)} reusable Golden Pipeline workflows have on.workflow_call.')
+          "

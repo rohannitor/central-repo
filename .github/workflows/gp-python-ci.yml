@@ -2,6 +2,7 @@ name: Golden Pipeline Python CI
 
 on:
   workflow_call:
+  workflow_dispatch:
     inputs:
       python-version:
         description: 'Python runtime version'
