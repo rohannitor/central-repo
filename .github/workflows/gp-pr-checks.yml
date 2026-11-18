@@ -28,13 +28,15 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           echo "Validating PR title: $PR_TITLE"
-          # Conventional Commits Regex
-          CC_REGEX="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?: .{1,100}$"
-          if [[ ! "$PR_TITLE" =~ $CC_REGEX ]]; then
-            echo "ERROR: PR title does not follow Conventional Commits standard (e.g., 'feat(auth): add OIDC support')."
-            exit 1
-          fi
-          echo "PR title is valid."
+          python3 -c "
+          import os, re, sys
+          title = os.environ.get('PR_TITLE', '').strip()
+          pattern = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_.-]+\))?: .{1,100}$'
+          if not re.match(pattern, title):
+              print(f'ERROR: PR title \"{title}\" does not follow Conventional Commits standard (e.g., \"feat(auth): add OIDC support\").')
+              sys.exit(1)
+          print('PR title is valid.')
+          "
 
       - name: Validate Branch Targeting Rules
         env:
@@ -52,11 +54,14 @@ jobs:
       - name: Validate Commit Messages
         run: |
           echo "Scanning commit messages in PR range..."
-          COMMITS=$(git log --no-merges origin/${{ github.base_ref }}..HEAD --pretty=format:"%s")
-          CC_REGEX="^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_\-\.]+\))?: .{1,100}$"
-          while IFS= read -r line; do
-            if [[ -n "$line" && ! "$line" =~ $CC_REGEX ]]; then
-              echo "WARNING: Commit message '$line' does not follow Conventional Commits format."
-            fi
-          done <<< "$COMMITS"
-          echo "Commit inspection completed."
+          git log --no-merges origin/${{ github.base_ref }}..HEAD --pretty=format:"%s" > /tmp/commits.txt
+          python3 -c "
+          import re, sys
+          pattern = r'^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9_.-]+\))?: .{1,100}$'
+          with open('/tmp/commits.txt', 'r', encoding='utf-8') as f:
+              for line in f:
+                  msg = line.strip()
+                  if msg and not re.match(pattern, msg):
+                      print(f'WARNING: Commit message \"{msg}\" does not follow Conventional Commits format.')
+          print('Commit inspection completed.')
+          "
