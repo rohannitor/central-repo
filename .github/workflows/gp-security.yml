@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
 
       - name: Gitleaks Secret Detection Scan
-        uses: gitleaks/gitleaks-action@[REDACTED_GITHUB_ACCESS_TOKEN_1] # v2.3.8
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: false
